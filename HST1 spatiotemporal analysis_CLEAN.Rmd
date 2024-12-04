@@ -1,0 +1,795 @@
+---
+title: "HST1 spatiotemporal analysis"
+output:
+   html_document:
+      toc: TRUE
+      toc_depth: 2
+      toc_float: true
+---
+
+```{r}
+pacman::p_load(tidyverse, nlme, emmeans, patchwork, dplyr, ggplot2)
+#install.packages("patchwork")
+```
+
+# Wrangle data
+```{r}
+a=read.csv(file.path("../HIT-Stroke_Trial", "StudyData", "DASH export A.csv"))
+b=read.csv(file.path("../HIT-Stroke_Trial", "StudyData", "DASH export B.csv"))
+c=read.csv(file.path("../HIT-Stroke_Trial", "StudyData", "DASH export C.csv"))
+d=read.csv(file.path("../HIT-Stroke_Trial", "StudyData", "DASH export D.csv"))
+e=read.csv(file.path("../HIT-Stroke_Trial", "StudyData", "DASH export E.csv"))
+b.c=read.csv("Electronic walkway data. Corrected.csv") %>%
+   mutate(test_session = as.integer(fct_recode(factor(test_session, levels=c("PRE","4WK","8WK","12WK")), "1"="PRE", "2"="4WK", "3"="8WK", "4"="12WK")))
+
+#names(b)
+outcomes=c("cadence", "StepLength_P", "StepLength_NP", "StepLength_sym", "StepTime_P", "StepTime_NP", "StepTime_sym",  "SingleSupport_P","SingleSupport_NP", "SingleSupport_sym", "StrideVelocityCV", "CycleTimeCV", "StrideLengthCV", "StrideVelocitySD", "CycleTimeSD", "StrideLengthSD")
+labels=c("Cadence (steps/min)", "Paretic step length (cm)", "Non-Paretic step length (cm)", "Step length symmetry", "Paretic step time (s)", "Non-Paretic step time (s)", "Step time symmetry", "Paretic single-support time (%)", "Non-Paretic single-support time (%)", "Single-support symmetry", "Stride velocity CV (%)", "Stride time CV (%)", "Stride length CV (%)", "Stride velocity SD (cm/s)", "Stride time SD (s)", "Stride length SD (cm)")
+digits=c(1,1,1,1,2,1,1,1,1,1,1,1,1,1,2,1)
+outcomes.sym=c("StepLength_sym", "StepTime_sym", "SingleSupport_sym")
+labels.sym=c("Step length symmetry", "Step time symmetry", "Single-support symmetry")
+outcomes.PNP=c("StepLength_P", "StepTime_P", "SingleSupport_P", "StepLength_NP", "StepTime_NP", "SingleSupport_NP")
+labels.PNP=c("P step length (cm)", "P step time (s)", "P single-support time (%)",
+             "NP step length (cm)", "NP step time (s)", "NP single-support time (%)")
+outcomes.CV=c("StrideVelocityCV", "CycleTimeCV", "StrideLengthCV", "StrideVelocitySD", "CycleTimeSD", "StrideLengthSD")
+labels.CV=c("Stride velocity CV (%)", "Stride time CV (%)", "Stride length CV (%)", "Stride velocity SD (cm/s)", "Stride time SD (s)", "Stride length SD (cm)")
+#outcome="smwt_m"
+
+data=left_join(b, a, by="id") %>%
+   left_join(b.c, by=c("id","test_session"), suffix=c("___ORIG___","")) %>%
+   select(-ends_with("___ORIG___"))
+data$id=factor(data$id)
+data$test_session_num=data$test_session
+data$test_session=factor(data$test_session) %>% 
+   fct_recode(Baseline="1", "4-week"="2", "8-week"="3", "12-week"="4")
+data$study_site=factor(data$study_site)
+data$treatment=fct_recode(data$treatment, HIIT="HIT") %>% fct_relevel("MAT")
+data = mutate(data, test_phase = if_else(test_session=="Baseline", "Baseline", "Post 4, 8, and 12-week"))
+#data=left_join(data, newdata)
+```
+
+
+# QC
+Setting extremely implausible values to missing, especially if we don't have the raw data file to validate
+No plausible CVs above 50
+```{r message=FALSE, warning=FALSE}
+summary(data$StrideVelocityCV) ; sd(data$StrideVelocityCV, na.rm=T)
+data %>% filter(StrideVelocityCV > 40) %>% select(id, test_session, all_of(outcomes.CV), all_of(outcomes))
+data[data$id=="33" & data$test_session=="Baseline", "right.file"] #TRUE but still too implausible for id and overall
+data[data$id=="33" & data$test_session=="Baseline", "StrideVelocityCV"]=NA
+data[data$id=="53" & data$test_session=="4-week", "right.file"] #TRUE still implausible overall
+data[data$id=="53" & data$test_session=="4-week", c("StrideVelocityCV")]=NA 
+data[data$id=="53" & data$test_session=="12-week", c("StrideVelocityCV")]=NA 
+data[data$id=="11" & data$test_session=="Baseline", "right.file"] #FALSE and only value for id
+data[data$id=="11" & data$test_session=="Baseline", c("StrideVelocityCV")]=NA
+ggplot(data, aes(x=test_session, y=StrideVelocityCV, group=id)) + geom_line() + geom_point() + facet_wrap(~id)
+ggsave("Figures/QC.StrideVelocityCV.pdf", width=30, height=30)
+
+summary(data$CycleTimeCV) ; sd(data$CycleTimeCV, na.rm=T)
+data %>% filter(CycleTimeCV > 40) %>% select(id, test_session, all_of(outcomes.CV), all_of(outcomes))
+data[data$id=="11" & data$test_session=="Baseline", "right.file"] #FALSE and only value for id
+data[data$id=="11" & data$test_session=="Baseline", c("CycleTimeCV")]=NA
+ggplot(data, aes(x=test_session, y=CycleTimeCV, group=id)) + geom_line() + geom_point() + facet_wrap(~id)
+ggsave("Figures/QC.CycleTimeCV.pdf", width=30, height=30)
+
+summary(data$StrideLengthCV) ; sd(data$StrideLengthCV, na.rm=T)
+data %>% filter(StrideLengthCV > 40) %>% select(id, test_session, all_of(outcomes.CV), all_of(outcomes))
+data[data$id=="42" & data$test_session=="12-week", "right.file"] #FALSE and very extreme
+data[data$id=="42" & data$test_session=="12-week", "StrideLengthCV"]=NA
+data[data$id=="22" & data$test_session=="12-week", "right.file"] #FALSE and very extreme
+data[data$id=="22" & data$test_session=="12-week", "StrideLengthCV"]=NA
+data[data$id=="53" & data$test_session=="Baseline", "right.file"] #TRUE - also plausible based on other values for id
+ggplot(data, aes(x=test_session, y=StrideLengthCV, group=id)) + 
+   geom_line() + geom_point() + facet_wrap(~id)
+ggsave("Figures/QC.StrideLengthCV.pdf", width=30, height=30)
+
+summary(data$StepTime_P) ; sd(data$StepTime_P, na.rm=T)
+data %>% filter(StepTime_P > 2) %>% select(id, test_session, right.file, StepTime_P, StepTime_NP, all_of(outcomes))
+data %>% filter(StepTime_P < 0.5) %>% select(id, test_session, right.file, StepTime_P, StepTime_NP, all_of(outcomes))
+ggplot(data, aes(x=test_session, y=StepTime_P, group=id)) + geom_line() + geom_point() + facet_wrap(~id)
+ggsave("Figures/QC.StepTime_P.pdf", width=30, height=30)
+
+```
+
+# QC for SD data
+Making sure to drop same values for both CV and SD
+```{r message=FALSE, warning=FALSE}
+summary(data$StrideVelocitySD) ; sd(data$StrideVelocitySD, na.rm=T)
+data %>% filter(StrideVelocitySD > 10) %>% select(id, test_session, StrideVelocitySD, all_of(outcomes))
+data[data$id=="33" & data$test_session=="Baseline", "right.file"] #TRUE but still too implausible for id and overall
+data[data$id=="33" & data$test_session=="Baseline", "StrideVelocitySD"]=NA
+data[data$id=="53" & data$test_session=="4-week", "right.file"] #TRUE still implausible overall
+data[data$id=="53" & data$test_session=="4-week", c("StrideVelocitySD")]=NA 
+data[data$id=="53" & data$test_session=="12-week", c("StrideVelocitySD")]=NA 
+data[data$id=="11" & data$test_session=="Baseline", "right.file"] #FALSE and only value for id
+data[data$id=="11" & data$test_session=="Baseline", c("StrideVelocitySD")]=NA
+ggplot(data, aes(x=test_session, y=StrideVelocitySD, group=id)) + geom_line() + geom_point() + facet_wrap(~id)
+ggsave("Figures/QC.StrideVelocitySD.pdf", width=30, height=30)
+
+summary(data$CycleTimeSD) ; sd(data$CycleTimeSD, na.rm=T)
+data %>% filter(CycleTimeSD > 0.5) %>% select(id, test_session, CycleTimeSD, all_of(outcomes))
+data[data$id=="11" & data$test_session=="Baseline", "right.file"] #FALSE and only value for id
+data[data$id=="11" & data$test_session=="Baseline", c("CycleTimeSD")]=NA
+ggplot(data, aes(x=test_session, y=CycleTimeSD, group=id)) + geom_line() + geom_point() + facet_wrap(~id)
+ggsave("Figures/QC.CycleTimeSD.pdf", width=30, height=30)
+
+summary(data$StrideLengthSD) ; sd(data$StrideLengthSD, na.rm=T)
+data %>% filter(StrideLengthSD > 10) %>% select(id, test_session, StrideLengthSD, all_of(outcomes))
+data[data$id=="42" & data$test_session=="12-week", "right.file"] #FALSE and very extreme
+data[data$id=="42" & data$test_session=="12-week", "StrideLengthSD"]=NA
+data[data$id=="22" & data$test_session=="12-week", "right.file"] #FALSE and very extreme
+data[data$id=="22" & data$test_session=="12-week", "StrideLengthSD"]=NA
+data[data$id=="53" & data$test_session=="Baseline", "right.file"] #TRUE - also plausible based on other values for id
+ggplot(data, aes(x=test_session, y=StrideLengthSD, group=id)) + 
+   geom_line() + geom_point() + facet_wrap(~id)
+ggsave("Figures/QC.StrideLengthSD.pdf", width=30, height=30)
+```
+
+
+ID 53 switched from longer non-paretic step length to longer paretic step length between baseline/4wk and 8wk/12 week while velocity improved
+Also had very extreme SD/CVs for some values/time points and some other extreme changes.
+Could be intermittent toe drag that was not appropriately cleaned, but raw files are no longer available and values are not conclusively implausible, so leaving in.
+```{r}
+filter(data, id=="53") %>% select(test_session, all_of(outcomes))
+```
+
+##DATA EXPORT HERE
+```{r}
+data.selected <- data %>% select(id, test_session, cadence, StepLength_P, StepLength_NP, StepLength_sym, StepTime_P, StepTime_NP, StepTime_sym, SingleSupport_P, SingleSupport_NP, SingleSupport_sym, StrideVelocityCV, CycleTimeCV, StrideLengthCV, StrideVelocitySD, CycleTimeSD, StrideLengthSD)
+data.selected
+#write.csv(data.selected, "Data Selected.csv", row.names=F)
+```
+
+
+#Available Data
+```{r}
+filtered_data <- filter(data, !is.na(cadence))
+total_obs <- filtered_data %>%
+  summarize(total = n())
+total_obs
+Exp_obs <- 55*4
+Exp_obs
+obs <- group_by(filtered_data, treatment) %>%
+count(test_session)
+obs
+#obs_tx <- obs %>% 
+#  summarize(total = sum(n, na.rm = T))
+#obs_tx
+```
+
+
+# Main results table 
+```{r}
+means.table=NULL ; means.wide.table=NULL ; 
+emmeans=vector("list", length=length(outcomes)) ; names(emmeans)=outcomes ; contrasts.w=emmeans
+contrasts.table=NULL ; N.table=NULL
+for(outcome in outcomes) {
+  print(paste0("Starting on ", outcome))
+   N.obs=data %>% drop_na(outcome) %>% group_by(treatment, test_phase) %>% summarise(N=n(), .groups="keep") %>%
+      rename(test_session=test_phase)
+   N.wide=N.obs %>% pivot_wider(names_from=treatment, values_from=N, names_prefix="N.obs.") 
+   model=gls(as.formula(paste0(outcome, " ~ (treatment + cgs_ge04_pre + study_site)*test_session")),
+      correlation=corSymm(form=~test_session_num|id), varIdent(form=~1|test_session), 
+      data=data, na.action=na.omit)
+   emmeans[[outcome]]=tryCatch( 
+      emmeans(model, ~treatment*test_session),
+      error = function(e) { 
+         print("  Running with mode=df.error") 
+         emmeans=emmeans(model, ~treatment*test_session, mode = "df.error") 
+         # occurred with StrideVelocityCV on first run, but not anymore after removing implausible value
+         }
+   )
+   
+   # time-point means
+   means=summary(emmeans[[outcome]])[,c(1:3,6:7)] %>% mutate(outcome=outcome, .before=treatment)
+   means.table=rbind(means.table, means)
+   contrast=summary(pairs(emmeans[[outcome]], by="test_session", reverse=T, infer=c(T,T)))[,c(2:3,6:7,9)] %>% 
+      rename_with( ~paste0("HIIT-MAT: ", .x, recycle0=T), -c(test_session) )
+   means.wide=means %>% pivot_wider(names_from=treatment, values_from=c(4:6), 
+                                            names_vary="slowest", names_glue="{treatment}_{.value}") %>%
+      left_join(contrast, by="test_session")
+   means.wide2=left_join(means.wide, N.wide, by="test_session")
+   means.wide.table=rbind(means.wide.table, means.wide2)
+   
+   # time-point contrasts
+   contrasts.within=contrast(emmeans[[outcome]], interaction=c(test_session="mean_chg"), by="treatment", infer=c(T,T)) %>%
+   subset(c(1,4))
+   contrasts.between=contrast(emmeans[[outcome]], interaction=c(treatment="revpairwise", test_session="mean_chg"), 
+                              adjust="none", infer=c(T,T)) %>% subset(1)
+   contrasts.w[[outcome]]=summary(contrasts.within)[,c(1:3,6:7,9)] 
+   contrasts.w.wide = contrasts.w[[outcome]] %>% 
+      pivot_wider(names_from=treatment, values_from=c(3:6), id_cols=test_session_mean_chg,
+                  names_vary="slowest", names_glue="{treatment}_{.value}")
+   contrasts.b=summary(contrasts.between)[,c(3,6:7,9)] %>% 
+      rename_with( ~paste0("HIIT-MAT: ", .x, recycle0=T))
+   contrasts=cbind(contrasts.w.wide, contrasts.b) %>% 
+      rename(test_session=test_session_mean_chg) %>% 
+      mutate(outcome=outcome, .before=test_session)
+   contrasts.table=rbind(contrasts.table, contrasts)
+   
+   N.wide$test_session=factor(c("Baseline", "Mean(4,8,12-week) - Baseline"))
+   N.wide=mutate(N.wide, outcome=outcome, .before=test_session)
+   N.table=rbind(N.table, N.wide)
+}
+
+# format and output main table
+main.table=means.wide.table %>% 
+   filter(test_session=="Baseline") %>%
+   rename(MAT_estimate=MAT_emmean, HIIT_estimate=HIIT_emmean) %>%
+   bind_rows(contrasts.table) %>%
+   left_join(data.frame(outcome=outcomes, i=1:length(outcomes), digits=digits), by="outcome") %>% 
+   arrange(i, test_session) %>% select(-c(i,N.obs.HIIT,N.obs.MAT)) %>%
+   mutate(test_session=factor(test_session, levels=c("Baseline","Baseline|(4-week)"), labels=c("Baseline","Mean(4,8,12-week) - Baseline"))) %>%
+   left_join(N.table, by=c("outcome","test_session")) %>%
+   mutate(Mean.HIIT=sprintf("%.*f [%.*f, %.*f]", digits, HIIT_estimate, digits, HIIT_lower.CL, digits, HIIT_upper.CL)) %>% 
+   mutate(Mean.MAT=sprintf("%.*f [%.*f, %.*f]", digits, MAT_estimate, digits, MAT_lower.CL, digits, MAT_upper.CL)) %>%
+   mutate(`Mean.HIIT-MAT`=
+      sprintf("%.*f [%.*f, %.*f]", digits, `HIIT-MAT: estimate`, digits, `HIIT-MAT: lower.CL`, digits, `HIIT-MAT: upper.CL`)) %>%
+   mutate(`HIIT.change.p`=sprintf("%.4f", `HIIT_p.value`)) %>%
+   mutate(`MAT.change.p`=sprintf("%.4f", `MAT_p.value`)) %>%
+   mutate(`HIIT-MAT: p.value`=sprintf("%.4f", `HIIT-MAT: p.value`)) %>%
+   select(outcome, test_session, N.obs.HIIT, N.obs.MAT, 
+          Mean.HIIT, HIIT.change.p, 
+          Mean.MAT, MAT.change.p, 
+          `Mean.HIIT-MAT`, `HIIT-MAT: p.value`) %>% # `HIIT-MAT: p.value`
+   bind_rows(data.frame(outcome=outcomes, test_session=factor("A"))) %>%
+   left_join(data.frame(outcome=outcomes, label=labels, i=1:length(outcomes)), by="outcome") %>%
+   mutate(test_session=factor(test_session, levels=c("A","Baseline","Mean(4,8,12-week) - Baseline"))) %>%
+   arrange(i, test_session) %>%
+   mutate(test_session=if_else(test_session=="A", label, test_session)) %>%
+   select(-c(outcome, label, i))
+main.table
+#write.csv(main.table, "Table 2.csv", row.names=F, na="")
+```
+
+# Contrasts figures
+```{r}
+plot.outcomes=c("StepLength_NP", "StepTime_NP", "SingleSupport_NP",
+                "StepLength_P", "StepTime_P", "SingleSupport_P",
+                "StepLength_sym", "StepTime_sym", "SingleSupport_sym",
+                outcomes.CV)
+plot.labels=c("Non-Paretic step length (cm)", "Non-Paretic step time (s)", "Non-Paretic single-support time (%)",
+              "Paretic step length (cm)", "Paretic step time (s)", "Paretic single-support time (%)",
+              "Step length symmetry","Step time symmetry", "Single-support symmetry",
+              labels.CV)
+contrasts.table.long=NULL
+for(outcome in outcomes) {
+   temp=contrasts.w[[outcome]] %>% mutate(outcome=outcome) %>% rename(test_session=test_session_mean_chg)
+   contrasts.table.long=rbind(contrasts.table.long, temp)
+}
+dodge=position_dodge(width=0.3)
+plot.con = contrasts.table.long %>% mutate(outcome=factor(outcome, levels=plot.outcomes, labels=plot.labels)) %>% 
+   filter(!is.na(outcome)) %>%
+   ggplot(aes(x=test_session, y=estimate, group=treatment, col=treatment, ymin=lower.CL, ymax=upper.CL)) + 
+      facet_wrap(~outcome, scales="free_y", ncol=3) +
+      geom_hline(yintercept=0, col="black", linetype=3) +
+      geom_errorbar(position=dodge, width=0.3, linewidth=1.25, alpha=1) + 
+      geom_point(position=dodge, size=4) +
+      scale_color_manual(values=c("HIIT"="red","MAT"="orange")) + 
+      scale_x_discrete(NULL, labels=element_blank(), breaks=NULL, drop=T) + 
+      labs(x=element_blank(), y=element_blank()) +
+      theme_bw() + theme(text=element_text(size=11), 
+                         legend.position="top", legend.title = element_blank(), legend.text=element_text(size=20)) 
+
+plot.con
+
+plot.head = contrasts.table.long %>% mutate(outcome=factor(outcome, levels=outcomes, labels=labels)) %>%  
+     filter(outcome %in% c("Cadence (steps/min)")) %>%
+   ggplot(aes(x=test_session, y=estimate, group=treatment, col=treatment, ymin=lower.CL, ymax=upper.CL)) + 
+      facet_wrap(~outcome, scales="free_y", ncol=1) +
+      geom_hline(yintercept=0, col="black", linetype=3) +
+      geom_errorbar(position=dodge, width=0.3, linewidth=1.25, alpha=1) + 
+      geom_point(position=dodge, size=4) +
+      scale_color_manual(values=c("HIIT"="red","MAT"="orange")) + 
+      scale_x_discrete(NULL, labels=element_blank(), breaks=NULL, drop=T) + 
+      labs(x=element_blank(), y=element_blank()) +
+      theme_bw() + theme(text=element_text(size=11), 
+                         legend.key.width=unit(2.05, "lines"), legend.direction="horizontal",
+                         legend.position="left", legend.title = element_blank(), legend.text=element_text(size=20),
+                         plot.margin = unit(c(1, 2, .5, 1), "lines"),# Add more space on the left of plot
+                           aspect.ratio = 3/5
+      )
+#(plot.con + theme(legend.position="none") ) / free(plot.head) + plot_layout(heights=c(5.5,1))
+#ggsave("Figures/Fig 2cadenceTEST.jpg", width=8.5, height=11, device="jpeg")
+## MAY WANT TO CHANGE NAME TO Fig 2
+```
+
+# Means figures by time point
+```{r}
+if (!dir.exists("Figures")) { dir.create("Figures") } # Make figures subfolder if it doesn't already exist
+dodge=position_dodge(width=0.2)
+plot.sym = means.table %>% mutate(outcome=factor(outcome, levels=outcomes.sym, labels=labels.sym)) %>% 
+   filter(outcome %in% labels.sym) %>%
+   ggplot(aes(x=test_session, y=emmean, group=treatment, col=treatment, ymin=lower.CL, ymax=upper.CL)) + 
+      facet_wrap(~outcome, scales="free_y") +
+      geom_hline(yintercept=100, col="black", linetype=3) +
+      geom_errorbar(position=dodge, width=0.2, linewidth=1, alpha=0.2) + 
+      geom_line(position=dodge, linewidth=1) + 
+      geom_point(position=dodge, size=2.5) +
+      scale_color_manual(values=c("HIIT"="red","MAT"="orange")) + 
+      scale_x_discrete(labels=c("PRE","4WK","8WK",'12WK')) + 
+      labs(x=element_blank(), y=element_blank()) +
+      theme_bw() + theme(text=element_text(size=15), 
+                         legend.position="none") 
+#plot.sym
+
+dodge=position_dodge(width=0.4)
+plot.PNP=means.table %>% 
+   mutate(Side=factor(ifelse(endsWith(outcome, "_P"), "Paretic", ifelse(endsWith(outcome, "_NP"), "Non-Paretic", NA))),
+          outcome=factor(outcome, levels=outcomes.PNP, labels=labels.PNP) ) %>% 
+   filter(outcome %in% labels.PNP) %>%
+   mutate(outcome=factor(gsub("P ","", gsub("NP ","",as.character(outcome))), 
+                         levels=c("step length (cm)", "step time (s)", "single-support time (%)")),
+          SideTreatment=factor(paste(Side, treatment))) %>%
+   ggplot(aes(x=test_session, y=emmean, group=SideTreatment, col=treatment, shape=Side, ymin=lower.CL, ymax=upper.CL)) +
+      facet_wrap(~outcome, scales="free_y") +
+      geom_errorbar(position=dodge, width=0.4, linewidth=1, alpha=0.2) + 
+      geom_line(aes(x=test_session, y=emmean, linetype=Side), position=dodge) + 
+      geom_point(position=dodge, size=2.5) +
+      scale_color_manual(values=c("HIIT"="red","MAT"="orange")) + 
+      scale_shape_manual(values=c(15,2)) + 
+      scale_x_discrete(labels=c("PRE","4WK","8WK",'12WK')) + 
+      labs(x=element_blank(), y=element_blank()) +
+      theme_bw() + theme(text=element_text(size=15), 
+                         legend.position="top", legend.title = element_blank(), legend.text=element_text(size=20)) 
+#plot.PNP
+
+plot.PNP / (plot.sym + theme(legend.position="none") ) + plot_layout(heights=c(1.5,1))
+#ggsave("Figures/Fig. PNP and Symmetry.pdf", width=7.5, height=9, device=cairo_pdf)
+
+# Variability
+dodge=position_dodge(width=0.2)
+plot.CV = means.table %>% mutate(outcome=factor(outcome, levels=outcomes.CV, labels=labels.CV)) %>% 
+   filter(outcome %in% labels.CV) %>%
+   ggplot(aes(x=test_session, y=emmean, group=treatment, col=treatment, ymin=lower.CL, ymax=upper.CL)) + 
+      facet_wrap(~outcome, scales="free_y") +
+      geom_errorbar(position=dodge, width=0.2, linewidth=1, alpha=0.2) + 
+      geom_line(position=dodge, linewidth=1) + 
+      geom_point(position=dodge, size=2.5) +
+      scale_color_manual(values=c("HIIT"="red","MAT"="orange")) + 
+      scale_x_discrete(labels=c("PRE","4WK","8WK",'12WK')) + 
+      labs(x=element_blank(), y=element_blank()) +
+      theme_bw() + theme(text=element_text(size=15), legend.position="none") 
+plot.CV
+#ggsave("Figures/Fig. Variability.pdf", width=7.5, height=3, device=cairo_pdf)
+
+# All together with cadence + PSR
+plot.cadence = means.table %>% mutate(outcome=factor(outcome, levels=outcomes, labels=labels)) %>% 
+   filter(outcome %in% c("Cadence (steps/min)")) %>%
+   ggplot(aes(x=test_session, y=emmean, group=treatment, col=treatment, ymin=lower.CL, ymax=upper.CL)) + 
+      facet_wrap(~outcome, scales="free_y", ncol=3) +
+      geom_errorbar(position=dodge, width=0.2, linewidth=1, alpha=0.2) + 
+      geom_line(position=dodge, linewidth=1) + 
+      geom_point(position=dodge, size=2.5) +
+      scale_color_manual(values=c("HIIT"="red","MAT"="orange")) + 
+      scale_x_discrete(labels=c("PRE","4WK","8WK",'12WK')) + 
+      labs(x=element_blank(), y=element_blank()) +
+      theme_bw() + theme(text=element_text(size=15), legend.position="none") 
+#(plot.PNP + theme(legend.position='bottom')) / (plot.sym) / (plot.CV) / (plot.cadence) + plot_layout(heights=c(1.5,1,1.75,1))
+#ggsave("Figures/Fig 1TEST.jpeg", width=7.5, height=10, device = "jpeg")
+##MAY WANT TO CHANGE NAME TO Fig 1
+```
+
+
+# Contrasts figures by time point (N/A) KEEP GETTING ERROR - HAVE PIERCE RUN
+```{r}
+#levels(contrasts.w$contrast) = c(levels(contrasts.w$contrast),"baseline")
+#contrasts.w2=rbind(c("baseline",rep(NA,5)),contrasts.w[1:3,],c("baseline",rep(NA,5)),contrasts.w[4:6,])
+dodge=position_dodge(width=0.2)
+ggplot(contrasts.w[["StepLength_NP"]], 
+       aes(x=test_session_trt.vs.ctrl, y=estimate, col=treatment, ymin=lower.CL, ymax=upper.CL)) + 
+   geom_hline(yintercept=0, col="black", linetype=3) +
+   geom_errorbar(position=dodge, width=0.2, linewidth=2, alpha=1) + 
+   geom_point(position=dodge, size=4) +
+   scale_color_manual(values=c("HIIT"="red","MAT"="orange")) + 
+   labs(x="Change from Baseline", y="Non-paretic step length \u0394 (cm)") +
+   scale_x_discrete("Change from Baseline", labels=c("4-week","8-week",'12-week'), drop=F) + 
+   theme_bw() + theme(text=element_text(size=20),
+                      legend.title = element_blank(), legend.position="top", legend.text=element_text(size=25)) 
+
+contrasts.table.long=NULL
+for(outcome in outcomes) {
+   temp=contrasts.w[[outcome]] %>% mutate(outcome=outcome) %>% rename(test_session=test_session_trt.vs.ctrl)
+   contrasts.table.long=rbind(contrasts.table.long, temp)
+}
+dodge=position_dodge(width=0.4)
+plot.sym.con = contrasts.table.long %>% mutate(outcome=factor(outcome, levels=outcomes.sym, labels=labels.sym)) %>% 
+   filter(outcome %in% labels.sym) %>%
+   ggplot(aes(x=test_session, y=estimate, group=treatment, col=treatment, ymin=lower.CL, ymax=upper.CL)) + 
+      facet_wrap(~outcome, scales="free_y") +
+      geom_hline(yintercept=0, col="black", linetype=3) +
+      geom_errorbar(position=dodge, width=0.3, linewidth=1.25, alpha=1) + 
+      geom_point(position=dodge, size=4) +
+      scale_color_manual(values=c("HIIT"="red","MAT"="orange")) + 
+      scale_x_discrete("Change from Baseline", labels=c("4-week","8-week",'12-week'), drop=F) + 
+      labs(x=element_blank(), y=element_blank()) +
+      theme_bw() + theme(text=element_text(size=15), 
+                         legend.position="top", legend.title = element_blank(), legend.text=element_text(size=20)) 
+
+#plot.sym.con
+
+dodge=position_dodge(width=0.8)
+plot.PNP.con=contrasts.table.long %>% 
+   mutate(Side=factor(ifelse(endsWith(outcome, "_P"), "Paretic", ifelse(endsWith(outcome, "_NP"), "Non-Paretic", NA))),
+          outcome=factor(outcome, levels=outcomes.PNP, labels=labels.PNP) ) %>% 
+   filter(outcome %in% labels.PNP) %>%
+   mutate(outcome=factor(gsub("P ","", gsub("NP ","",as.character(outcome))), 
+                         levels=c("step length (cm)", "step time (s)", "single-support time (%)")),
+          SideTreatment=factor(paste(Side, treatment))) %>%
+   ggplot(aes(x=test_session, y=estimate, group=SideTreatment, col=treatment, shape=Side, ymin=lower.CL, ymax=upper.CL)) +
+      facet_wrap(~Side*outcome, scales="free_y") +
+      geom_hline(yintercept=0, col="black", linetype=3) +
+      geom_errorbar(position=dodge, width=0.3, linewidth=1.25, alpha=1) + 
+      geom_point(position=dodge, size=4) +
+      scale_color_manual(values=c("HIIT"="red","MAT"="orange")) + 
+      scale_x_discrete(labels=c("4-week","8-week",'12-week'), drop=F) + 
+      scale_shape_manual(values=c(15,2)) + 
+      labs(x=element_blank(), y=element_blank()) +
+      theme_bw() + theme(text=element_text(size=15), 
+                         legend.position="top", legend.title = element_blank(), legend.text=element_text(size=20)) 
+#plot.PNP.con
+
+plot.PNP.con / (plot.sym.con + theme(legend.position="none") ) + plot_layout(heights=c(2,1))
+ggsave("Figures/Fig. PNP and Symmetry. Contrasts by time point.pdf", width=7.5, height=9, device=cairo_pdf)
+
+# Variability
+dodge=position_dodge(width=0.4)
+plot.CV.con = contrasts.table.long %>% mutate(outcome=factor(outcome, levels=outcomes.CV, labels=labels.CV)) %>% 
+   filter(outcome %in% labels.CV) %>%
+   ggplot(aes(x=test_session, y=estimate, group=treatment, col=treatment, ymin=lower.CL, ymax=upper.CL)) + 
+      facet_wrap(~outcome, scales="free_y") +
+      geom_hline(yintercept=0, col="black", linetype=3) +
+      geom_errorbar(position=dodge, width=0.3, linewidth=1.25, alpha=1) + 
+      geom_point(position=dodge, size=4) +
+      scale_color_manual(values=c("HIIT"="red","MAT"="orange")) + 
+      scale_x_discrete("Change from Baseline", labels=c("4-week","8-week",'12-week'), drop=F) + 
+      labs(x=element_blank(), y=element_blank()) +
+      theme_bw() + theme(text=element_text(size=15), 
+                         legend.position="top", legend.title = element_blank(), legend.text=element_text(size=20)) 
+plot.CV.con
+#ggsave("Figures/Fig. Variability. Contrasts by time point.pdf", width=7.5, height=3, device=cairo_pdf)
+##TROUBLESHOOT!!
+```
+
+
+# Sensitivity analyses
+
+##Sensitivity analysis - drop ID 53 who had implausible step length changes between NP and P limbs
+
+```{r}
+data.no53 = filter(data, id != "53")
+```
+
+### Main results table without Implausible ID #53
+```{r}
+means.table=NULL ; means.wide.table=NULL ; 
+emmeans=vector("list", length=length(outcomes)) ; names(emmeans)=outcomes ; contrasts.w=emmeans
+contrasts.table=NULL ; N.table=NULL
+for(outcome in outcomes) {
+   print(paste0("Starting on ", outcome))
+   N.obs=data.no53 %>% drop_na(outcome) %>% group_by(treatment, test_phase) %>% summarise(N=n(), .groups="keep") %>%
+      rename(test_session=test_phase)
+   N.wide=N.obs %>% pivot_wider(names_from=treatment, values_from=N, names_prefix="N.obs.") 
+   model=gls(as.formula(paste0(outcome, " ~ (treatment + cgs_ge04_pre + study_site)*test_session")),
+      correlation=corSymm(form=~test_session_num|id), varIdent(form=~1|test_session), 
+      data=data.no53, na.action=na.omit)
+   emmeans[[outcome]]=tryCatch( 
+      emmeans(model, ~treatment*test_session),
+      error = function(e) { 
+         print("  Running with mode=df.error") 
+         emmeans=emmeans(model, ~treatment*test_session, mode = "df.error") 
+         # occurred with StrideVelocityCV on first run, but not anymore after removing implausible value
+         }
+   )
+   
+   # time-point means
+   means=summary(emmeans[[outcome]])[,c(1:3,6:7)] %>% mutate(outcome=outcome, .before=treatment)
+   means.table=rbind(means.table, means)
+   contrast=summary(pairs(emmeans[[outcome]], by="test_session", reverse=T, infer=c(T,T)))[,c(2:3,6:7,9)] %>% 
+      rename_with( ~paste0("HIIT-MAT: ", .x, recycle0=T), -c(test_session) )
+   means.wide=means %>% pivot_wider(names_from=treatment, values_from=c(4:6), 
+                                            names_vary="slowest", names_glue="{treatment}_{.value}") %>%
+      left_join(contrast, by="test_session")
+   means.wide2=left_join(means.wide, N.wide, by="test_session")
+   means.wide.table=rbind(means.wide.table, means.wide2)
+   
+   # time-point contrasts
+   contrasts.within=contrast(emmeans[[outcome]], interaction=c(test_session="mean_chg"), by="treatment", infer=c(T,T)) %>%
+   subset(c(1,4))
+   contrasts.between=contrast(emmeans[[outcome]], interaction=c(treatment="revpairwise", test_session="mean_chg"), 
+                              adjust="none", infer=c(T,T)) %>% subset(1)
+   contrasts.w[[outcome]]=summary(contrasts.within)[,c(1:3,6:7,9)] 
+   contrasts.w.wide = contrasts.w[[outcome]] %>% 
+      pivot_wider(names_from=treatment, values_from=c(3:6), id_cols=test_session_mean_chg,
+                  names_vary="slowest", names_glue="{treatment}_{.value}")
+   contrasts.b=summary(contrasts.between)[,c(3,6:7,9)] %>% 
+      rename_with( ~paste0("HIIT-MAT: ", .x, recycle0=T))
+   contrasts=cbind(contrasts.w.wide, contrasts.b) %>% 
+      rename(test_session=test_session_mean_chg) %>% 
+      mutate(outcome=outcome, .before=test_session)
+   contrasts.table=rbind(contrasts.table, contrasts)
+   
+   N.wide$test_session=factor(c("Baseline", "Mean(4,8,12-week) - Baseline"))
+   N.wide=mutate(N.wide, outcome=outcome, .before=test_session)
+   N.table=rbind(N.table, N.wide)
+}
+
+# format and output main table
+main.table=means.wide.table %>% 
+   filter(test_session=="Baseline") %>%
+   rename(MAT_estimate=MAT_emmean, HIIT_estimate=HIIT_emmean) %>%
+   bind_rows(contrasts.table) %>%
+   left_join(data.frame(outcome=outcomes, i=1:length(outcomes), digits=digits), by="outcome") %>% 
+   arrange(i, test_session) %>% select(-c(i,N.obs.HIIT,N.obs.MAT)) %>%
+   mutate(test_session=factor(test_session, levels=c("Baseline","Baseline|(4-week)"), labels=c("Baseline","Mean(4,8,12-week) - Baseline"))) %>%
+   left_join(N.table, by=c("outcome","test_session")) %>%
+   mutate(Mean.HIIT=sprintf("%.*f [%.*f, %.*f]", digits, HIIT_estimate, digits, HIIT_lower.CL, digits, HIIT_upper.CL)) %>% 
+   mutate(Mean.MAT=sprintf("%.*f [%.*f, %.*f]", digits, MAT_estimate, digits, MAT_lower.CL, digits, MAT_upper.CL)) %>%
+   mutate(`Mean.HIIT-MAT`=
+      sprintf("%.*f [%.*f, %.*f]", digits, `HIIT-MAT: estimate`, digits, `HIIT-MAT: lower.CL`, digits, `HIIT-MAT: upper.CL`)) %>%
+   mutate(`HIIT.change.p`=sprintf("%.4f", `HIIT_p.value`)) %>%
+   mutate(`MAT.change.p`=sprintf("%.4f", `MAT_p.value`)) %>%
+   mutate(`HIIT-MAT: p.value`=sprintf("%.4f", `HIIT-MAT: p.value`)) %>%
+   select(outcome, test_session, N.obs.HIIT, N.obs.MAT, 
+          Mean.HIIT, HIIT.change.p, 
+          Mean.MAT, MAT.change.p, 
+          `Mean.HIIT-MAT`, `HIIT-MAT: p.value`) %>% # `HIIT-MAT: p.value`
+   bind_rows(data.frame(outcome=outcomes, test_session=factor("A"))) %>%
+   left_join(data.frame(outcome=outcomes, label=labels, i=1:length(outcomes)), by="outcome") %>%
+   mutate(test_session=factor(test_session, levels=c("A","Baseline","Mean(4,8,12-week) - Baseline"))) %>%
+   arrange(i, test_session) %>%
+   mutate(test_session=if_else(test_session=="A", label, test_session)) %>%
+   select(-c(outcome, label, i))
+main.table
+#write.csv(main.table, "Table 2 without ID53.csv", row.names=F, na="")
+```
+
+
+## Sensitivity Analysis - Optimal Step Length
+```{r}
+#senstep_data = data %>% # With participant 53 data to get counts for demographics table
+senstep_data = data.no53 %>% #This is without participant 53 data d/t implausible values
+  mutate(StepLength_Optimal = ifelse(sex == '1', 67.2514-0.0581*age_years, 62.3704-0.1202*age_years)) %>% #adding column for optimal values
+  mutate(StepLength_Threshold = (StepLength_Optimal - StepLength_Optimal*0.0662*1.96)) %>% #adding step length threshold Values (Optimal - 1.96SD) 1SD=StepLength_Optimal*0.0662 
+  mutate(StepLength_Category = #separating into categories based on short steps per limb and optimal steps
+           ifelse(StepLength_NP < StepLength_Threshold & StepLength_P < StepLength_Threshold, "Short_Both",
+           ifelse(StepLength_NP < StepLength_Threshold, "Short_NP",
+           ifelse(StepLength_P < StepLength_Threshold, "Short_P", 
+           ifelse(StepLength_NP >= StepLength_Threshold & StepLength_P >= StepLength_Threshold, "Optimal", NA)))))
+#filter out Baseline to get separate dataset
+StepLength_Category.pre = filter(senstep_data, test_session == "Baseline") %>%
+  select(id, StepLength_Category)
+#Join datasets together with new column with baseline values in each column
+data_StepLength=left_join(senstep_data, StepLength_Category.pre, by="id")
+#filter data so have short_NP in there
+StepLength_NPshort = data_StepLength %>%
+  filter(StepLength_Category.y == "Short_NP" | StepLength_Category.y == "Short_Both")
+StepLength_Pshort = data_StepLength %>%
+  filter(StepLength_Category.y == "Short_P" | StepLength_Category.y == "Short_Both")
+StepLength_NPOP = data_StepLength %>%
+  filter(StepLength_Category.y == "Short_P" | StepLength_Category.y == "Optimal")
+StepLength_POP = data_StepLength %>%
+  filter(StepLength_Category.y == "Short_NP" | StepLength_Category.y == "Optimal")
+
+##counts below created with original dataset to include data from participant 53 in demographics table
+#Subop_NP <- StepLength_NPshort %>% group_by(treatment) %>% summarise(count = n_distinct(id))
+#Op_NP <- StepLength_NPOP %>% group_by(treatment) %>% summarise(count = n_distinct(id))
+#Subop_P <- StepLength_Pshort %>% group_by(treatment) %>% summarise(count = n_distinct(id))
+#Op_P <- StepLength_POP %>% group_by(treatment) %>% summarise(count = n_distinct(id))
+```
+
+##Sensitivity Analysis - Rerunning data with new dataset - using StepLength_NPshort
+```{r}
+outcomes.1 = outcomes[3]
+labels.1 = labels[3]
+digits.1 = digits[3]
+means.table=NULL ; means.wide.table=NULL ; 
+emmeans=vector("list", length=length(outcomes.1)) ; names(emmeans)=outcomes.1 ; contrasts.w=emmeans
+contrasts.table=NULL ; N.table=NULL
+for(outcome in outcomes.1) {
+   print(paste0("Starting on ", outcome))
+   N.obs=StepLength_NPshort %>% drop_na(outcome) %>% group_by(treatment, test_phase) %>% summarise(N=n(), .groups="keep") %>%
+      rename(test_session=test_phase)
+   N.wide=N.obs %>% pivot_wider(names_from=treatment, values_from=N, names_prefix="N.obs.") 
+   model=gls(as.formula(paste0(outcome, " ~ (treatment + cgs_ge04_pre + study_site)*test_session")),
+      correlation=corSymm(form=~test_session_num|id), varIdent(form=~1|test_session), 
+      data=StepLength_NPshort, na.action=na.omit)
+   emmeans[[outcome]]=tryCatch( 
+      emmeans(model, ~treatment*test_session),
+      error = function(e) { 
+         print("  Running with mode=df.error") 
+         emmeans=emmeans(model, ~treatment*test_session, mode = "df.error") 
+         # occurred with StrideVelocityCV on first run, but not anymore after removing implausible value
+         }
+   )
+   
+   # time-point means
+   means=summary(emmeans[[outcome]])[,c(1:3,6:7)] %>% mutate(outcome=outcome, .before=treatment)
+   means.table=rbind(means.table, means)
+   contrast=summary(pairs(emmeans[[outcome]], by="test_session", reverse=T, infer=c(T,T)))[,c(2:3,6:7,9)] %>% 
+      rename_with( ~paste0("HIIT-MAT: ", .x, recycle0=T), -c(test_session) )
+   means.wide=means %>% pivot_wider(names_from=treatment, values_from=c(4:6), 
+                                            names_vary="slowest", names_glue="{treatment}_{.value}") %>%
+      left_join(contrast, by="test_session")
+   means.wide2=left_join(means.wide, N.wide, by="test_session")
+   means.wide.table=rbind(means.wide.table, means.wide2)
+   
+   # time-point contrasts
+   contrasts.within=contrast(emmeans[[outcome]], interaction=c(test_session="mean_chg"), by="treatment", infer=c(T,T)) %>%
+   subset(c(1,4))
+   contrasts.between=contrast(emmeans[[outcome]], interaction=c(treatment="revpairwise", test_session="mean_chg"), 
+                              adjust="none", infer=c(T,T)) %>% subset(1)
+   contrasts.w[[outcome]]=summary(contrasts.within)[,c(1:3,6:7,9)] 
+   contrasts.w.wide = contrasts.w[[outcome]] %>% 
+      pivot_wider(names_from=treatment, values_from=c(3:6), id_cols=test_session_mean_chg,
+                  names_vary="slowest", names_glue="{treatment}_{.value}")
+   contrasts.b=summary(contrasts.between)[,c(3,6:7,9)] %>% 
+      rename_with( ~paste0("HIIT-MAT: ", .x, recycle0=T))
+   contrasts=cbind(contrasts.w.wide, contrasts.b) %>% 
+      rename(test_session=test_session_mean_chg) %>% 
+      mutate(outcome=outcome, .before=test_session)
+   contrasts.table=rbind(contrasts.table, contrasts)
+   
+   N.wide$test_session=factor(c("Baseline", "Mean(4,8,12-week) - Baseline"))
+   N.wide=mutate(N.wide, outcome=outcome, .before=test_session)
+   N.table=rbind(N.table, N.wide)
+}
+
+# format and output StepLength_NPshort table
+StepLength_NPshort.table=means.wide.table %>% 
+   filter(test_session=="Baseline") %>%
+   rename(MAT_estimate=MAT_emmean, HIIT_estimate=HIIT_emmean) %>%
+   bind_rows(contrasts.table) %>%
+   left_join(data.frame(outcome=outcomes.1, i=1:length(outcomes.1), digits=digits.1), by="outcome") %>% 
+   arrange(i, test_session) %>% select(-c(i,N.obs.HIIT,N.obs.MAT)) %>%
+   mutate(test_session=factor(test_session, levels=c("Baseline","Baseline|(4-week)"), labels=c("Baseline","Mean(4,8,12-week) - Baseline"))) %>%
+   left_join(N.table, by=c("outcome","test_session")) %>%
+   mutate(Mean.HIIT=sprintf("%.*f [%.*f, %.*f]", digits.1, HIIT_estimate, digits.1, HIIT_lower.CL, digits.1, HIIT_upper.CL)) %>% 
+   mutate(Mean.MAT=sprintf("%.*f [%.*f, %.*f]", digits.1, MAT_estimate, digits.1, MAT_lower.CL, digits.1, MAT_upper.CL)) %>%
+   mutate(`Mean.HIIT-MAT`=
+      sprintf("%.*f [%.*f, %.*f]", digits.1, `HIIT-MAT: estimate`, digits.1, `HIIT-MAT: lower.CL`, digits.1, `HIIT-MAT: upper.CL`)) %>%
+   mutate(`HIIT.change.p`=sprintf("%.4f", `HIIT_p.value`)) %>%
+   mutate(`MAT.change.p`=sprintf("%.4f", `MAT_p.value`)) %>%
+   mutate(`HIIT-MAT: p.value`=sprintf("%.4f", `HIIT-MAT: p.value`)) %>%
+   select(outcome, test_session, N.obs.HIIT, N.obs.MAT, 
+          Mean.HIIT, HIIT.change.p, 
+          Mean.MAT, MAT.change.p, 
+          `Mean.HIIT-MAT`, `HIIT-MAT: p.value`) %>% # `HIIT-MAT: p.value`
+   bind_rows(data.frame(outcome=outcomes.1, test_session=factor("A"))) %>%
+   left_join(data.frame(outcome=outcomes.1, label=labels.1, i=1:length(outcomes.1)), by="outcome") %>%
+   mutate(test_session=factor(test_session, levels=c("A","Baseline","Mean(4,8,12-week) - Baseline"))) %>%
+   arrange(i, test_session) %>%
+   mutate(test_session=if_else(test_session=="A", label, test_session)) %>%
+   select(-c(outcome, label, i))
+StepLength_NPshort.table
+#write.csv(StepLength_NPshort.table, "Table_ShortNPStepLength.csv", row.names=F, na="")
+```
+
+
+##Sensitivity Analysis - Asymmetrical at baseline (Absolute Symmetry)
+```{r}
+#make new column (Sym_Category) that indicates if participant was symmetrical or asymmetrical at baseline
+#AbsSym_data = data %>% #with data from participant 53 for demographics table
+AbSym_data = data.no53 %>% #This is without data from participant 53 d/t implausible values - used for table
+  mutate(Sym_Category = ifelse(StepLength_sym <95.2, "Asymmetrical", "Symmetrical"))
+#filter out baseline to get separate dataset
+Sym_Category.pre = filter(AbSym_data, test_session == "Baseline") %>%
+  select(id, Sym_Category)
+#join datasets together with neew column with baseline values in each column
+data_Absym=left_join(AbSym_data, Sym_Category.pre, by="id")
+#filter data so only have Asymmetrical participants 
+Absym_asymm = data_Absym %>%
+  filter(Sym_Category.y == "Asymmetrical")
+# Absym_asymm %>% group_by(treatment) %>% summarise(count = n_distinct(id)) #count for demographics table - use entire cohort (data instead of data.no53)
+Absym_sym = data_Absym %>%
+  filter(Sym_Category.y == "Symmetrical")
+#Absym_sym %>% group_by(treatment) %>% summarise(count = n_distinct(id)) #count for demographics table - use entire cohort (data instead of data.no53)
+
+#AbSym_data%>% filter(test_phase=="Baseline") %>% select(id, test_phase, StepLength_sym, treatment)
+```
+
+##Sensitivity Analysis - absolute symmetry
+```{r}
+outcomes.3 = outcomes[4]
+labels.3 = labels[4]
+digits.3 = digits[4]
+
+means.table=NULL ; means.wide.table=NULL ; 
+emmeans=vector("list", length=length(outcomes.3)) ; names(emmeans)=outcomes.3 ; contrasts.w=emmeans
+contrasts.table=NULL ; N.table=NULL
+for(outcome in outcomes.3) {
+   print(paste0("Starting on ", outcome))
+   N.obs=Absym_asymm %>% drop_na(outcome) %>% group_by(treatment, test_phase) %>% summarise(N=n(), .groups="keep") %>% #change all absolsym_data to Absym_asymm
+      rename(test_session=test_phase)
+   N.wide=N.obs %>% pivot_wider(names_from=treatment, values_from=N, names_prefix="N.obs.") 
+   model=gls(as.formula(paste0(outcome, " ~ (treatment + cgs_ge04_pre + study_site)*test_session")),
+      correlation=corSymm(form=~test_session_num|id), varIdent(form=~1|test_session), 
+      data=Absym_asymm, na.action=na.omit)
+   emmeans[[outcome]]=tryCatch( 
+      emmeans(model, ~treatment*test_session),
+      error = function(e) { 
+         print("  Running with mode=df.error") 
+         emmeans=emmeans(model, ~treatment*test_session, mode = "df.error") 
+         # occurred with StrideVelocityCV on first run, but not anymore after removing implausible value
+         }
+   )
+   
+   # time-point means
+   means=summary(emmeans[[outcome]])[,c(1:3,6:7)] %>% mutate(outcome=outcome, .before=treatment)
+   means.table=rbind(means.table, means)
+   contrast=summary(pairs(emmeans[[outcome]], by="test_session", reverse=T, infer=c(T,T)))[,c(2:3,6:7,9)] %>% 
+      rename_with( ~paste0("HIIT-MAT: ", .x, recycle0=T), -c(test_session) )
+   means.wide=means %>% pivot_wider(names_from=treatment, values_from=c(4:6), 
+                                            names_vary="slowest", names_glue="{treatment}_{.value}") %>%
+      left_join(contrast, by="test_session")
+   means.wide2=left_join(means.wide, N.wide, by="test_session")
+   means.wide.table=rbind(means.wide.table, means.wide2)
+   
+   # time-point contrasts
+   contrasts.within=contrast(emmeans[[outcome]], interaction=c(test_session="mean_chg"), by="treatment", infer=c(T,T)) %>%
+   subset(c(1,4))
+   contrasts.between=contrast(emmeans[[outcome]], interaction=c(treatment="revpairwise", test_session="mean_chg"), 
+                              adjust="none", infer=c(T,T)) %>% subset(1)
+   contrasts.w[[outcome]]=summary(contrasts.within)[,c(1:3,6:7,9)] 
+   contrasts.w.wide = contrasts.w[[outcome]] %>% 
+      pivot_wider(names_from=treatment, values_from=c(3:6), id_cols=test_session_mean_chg,
+                  names_vary="slowest", names_glue="{treatment}_{.value}")
+   contrasts.b=summary(contrasts.between)[,c(3,6:7,9)] %>% 
+      rename_with( ~paste0("HIIT-MAT: ", .x, recycle0=T))
+   contrasts=cbind(contrasts.w.wide, contrasts.b) %>% 
+      rename(test_session=test_session_mean_chg) %>% 
+      mutate(outcome=outcome, .before=test_session)
+   contrasts.table=rbind(contrasts.table, contrasts)
+   
+   N.wide$test_session=factor(c("Baseline", "Mean(4,8,12-week) - Baseline"))
+   N.wide=mutate(N.wide, outcome=outcome, .before=test_session)
+   N.table=rbind(N.table, N.wide)
+}
+
+# format and output sen_sym table
+Absym_asymm.table=means.wide.table %>% 
+   filter(test_session=="Baseline") %>%
+   rename(MAT_estimate=MAT_emmean, HIIT_estimate=HIIT_emmean) %>%
+   bind_rows(contrasts.table) %>%
+   left_join(data.frame(outcome=outcomes.3, i=1:length(outcomes.3), digits=digits.3), by="outcome") %>% 
+   arrange(i, test_session) %>% select(-c(i,N.obs.HIIT,N.obs.MAT)) %>%
+   mutate(test_session=factor(test_session, levels=c("Baseline","Baseline|(4-week)"), labels=c("Baseline","Mean(4,8,12-week) - Baseline"))) %>%
+   left_join(N.table, by=c("outcome","test_session")) %>%
+   mutate(Mean.HIIT=sprintf("%.*f [%.*f, %.*f]", digits.3, HIIT_estimate, digits.3, HIIT_lower.CL, digits.3, HIIT_upper.CL)) %>% 
+   mutate(Mean.MAT=sprintf("%.*f [%.*f, %.*f]", digits.3, MAT_estimate, digits.3, MAT_lower.CL, digits.3, MAT_upper.CL)) %>%
+   mutate(`Mean.HIIT-MAT`=
+      sprintf("%.*f [%.*f, %.*f]", digits.3, `HIIT-MAT: estimate`, digits.3, `HIIT-MAT: lower.CL`, digits.3, `HIIT-MAT: upper.CL`)) %>%
+   mutate(`HIIT.change.p`=sprintf("%.4f", `HIIT_p.value`)) %>%
+   mutate(`MAT.change.p`=sprintf("%.4f", `MAT_p.value`)) %>%
+   mutate(`HIIT-MAT: p.value`=sprintf("%.4f", `HIIT-MAT: p.value`)) %>%
+   select(outcome, test_session, N.obs.HIIT, N.obs.MAT, 
+          Mean.HIIT, HIIT.change.p, 
+          Mean.MAT, MAT.change.p, 
+          `Mean.HIIT-MAT`, `HIIT-MAT: p.value`) %>% # `HIIT-MAT: p.value`
+   bind_rows(data.frame(outcome=outcomes.3, test_session=factor("A"))) %>%
+   left_join(data.frame(outcome=outcomes.3, label=labels.3, i=1:length(outcomes.3)), by="outcome") %>%
+   mutate(test_session=factor(test_session, levels=c("A","Baseline","Mean(4,8,12-week) - Baseline"))) %>%
+   arrange(i, test_session) %>%
+   mutate(test_session=if_else(test_session=="A", label, test_session)) %>%
+   select(-c(outcome, label, i))
+Absym_asymm.table
+#write.csv(Absym_asymm.table, "Table_Asymm.csv", row.names=F, na="")
+```
+
+
+##Curiosity plot without participant 53 d/t implausible values
+
+```{r}
+senstep_data %>% 
+  filter(test_session=="Baseline" & !is.na(StepLength_NP)) %>%
+  mutate(StepLength_Category = if_else(StepLength_NP < StepLength_Threshold, "Short_NP", "Non-short")) %>%
+  
+ggplot(aes(x=id, y=StepLength_NP)) +
+  geom_errorbar(aes(x=id, y=StepLength_Optimal, ymin=StepLength_Threshold, 
+                    ymax=StepLength_Optimal - StepLength_Threshold + StepLength_Optimal),
+                color="gray", linewidth=2, width=0) +
+  geom_point(aes(color=StepLength_Category)) +
+  labs(x="Participant ID", y="Non-paretic step length (cm)") +
+  theme_bw(base_size=14) + 
+  theme(legend.position="none")
+```
