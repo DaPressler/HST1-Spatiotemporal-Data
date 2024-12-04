@@ -1,0 +1,124 @@
+
+```{r}
+pacman::p_load(tidyverse, meta)
+```
+
+Oberg 1993 Table 8a.
+```{r}
+SL.men = tibble(
+   sex = "Male",
+   age.cat = c('10-14','15-19','20-29','30-39','40-49','50-59','60-69','70-79'),
+   age.mid = c(12.5,17.5,25,35,45,55,65,75),
+   N = c(12,15,15,15,15,15,15,14),
+   mean.cm = c(61.5, 66.0, 61.6, 64.9, 64.7, 63.5, 65.0, 61.5),
+   SD.cm = c(3.9, 4.8, 3.5, 4.6, 3.7, 6.0, 3.6, 5.1),
+) 
+
+SL.women = tibble(
+   sex = "Female",
+   age.cat = c('10-14','15-19','20-29','30-39','40-49','50-59','60-69','70-79'),
+   age.mid = c(12.5,17.5,25,35,45,55,65,75),
+   N = c(12,15,15,15,15,15,15,15),
+   mean.cm = c(54.2, 59.3, 59.1, 59.7, 57.1, 53.5, 55.3, 54.2),
+   SD.cm = c(2.9, 4.3, 6.3, 5.3, 3.7, 2.6, 4.2, 3.7)
+) 
+
+SL = bind_rows(SL.men, SL.women) %>%
+  mutate(CV = SD.cm / mean.cm) %>%
+   filter(age.mid > 30) 
+
+SL
+```
+
+
+Get regression model to smooth estimates across ages
+```{r}
+lm = lm(mean.cm ~ age.mid * sex, data=SL)
+summary(lm)
+```
+
+Or, better yet, using meta-regression
+```{r}
+meta = metagen(TE=mean.cm, seTE=SD.cm/sqrt(N), data=SL)
+metareg(meta, ~age.mid*sex)
+```
+
+Equation for normative SL based on age and sex:
+
+$62.3704 - 0.1202*age + 4.8810(if.male) + 0.0621*age (if.male)$
+
+Or, can use separate equations for women/men:
+   Women:   62.3704 - 0.1202*age
+   Men:     67.2514 - 0.0581*age
+
+Plot for mean SL
+```{r}
+ggplot(data=SL, mapping=aes(x=age.mid, y=mean.cm, ymin=mean.cm-SD.cm, ymax=mean.cm+SD.cm, group=sex, color=sex)) +
+   geom_errorbar() +
+   scale_color_manual(values=c("red","blue")) +
+   geom_abline(intercept=62.3704, slope=-0.1202, col="red", lwd=2, lty=2) +
+   geom_abline(intercept=67.2514, slope=-0.0581, col="blue", lwd=2, lty=2) +
+   theme_bw(base_size=14) +
+   labs(x="Age (years)", y="Mean Step Length (cm)")
+```
+
+
+
+Meta-analysis for SD (actually for variance)
+```{r}
+meta.varSL = metagen(TE=SD.cm^2, seTE=SD.cm^2 * sqrt(2/(N-1)), data=SL)
+meta.varSL
+metareg(meta.varSL, ~ age.mid * sex) # no effect of age or sex
+metareg(meta.varSL, ~ mean.cm) # possible higher variability with higher mean values - let's calculate CV instead
+```
+
+Plot for SD SL
+```{r}
+ggplot(data=SL, mapping=aes(x=mean.cm, y=SD.cm^2, col=sex, ymin=SD.cm^2-SD.cm^2 * sqrt(2/(N-1)), ymax=SD.cm^2+SD.cm^2 * sqrt(2/(N-1)))) +
+   geom_errorbar() + geom_point() +
+   scale_color_manual(values=c("red","blue")) +
+   geom_abline(intercept=-24.4196, slope=0.6537, col="purple", lwd=2, lty=2) +
+   theme_bw(base_size=14) +
+   labs(x="Mean Step Length (cm)", y="Variance in Step Length (cm^2)")
+```
+
+
+```{r}
+meta.CV.SL = metagen(TE=CV, seTE=sqrt( CV^2 / (N-1) * (0.5 + CV^2 ) ), data=SL)
+metareg(meta.CV.SL, ~ age.mid * sex) # no effect of age or sex
+meta.CV.SL
+```
+
+Plot for CV SL
+```{r}
+ggplot(data=SL, mapping=aes(x=age.mid, y=CV, 
+                            ymin=CV - sqrt( CV^2 / (N-1) * (0.5 + CV^2 ) ), 
+                            ymax=CV + sqrt( CV^2 / (N-1) * (0.5 + CV^2 ) ), 
+                            group=sex, color=sex)) +
+  geom_hline(yintercept=0.0662, lwd=2, lty=2) + 
+  geom_errorbar(position=position_dodge(width=3), width=3) + 
+  geom_point(position=position_dodge(width=3)) +
+  scale_color_manual(values=c("red","blue")) +
+  theme_bw(base_size=14) +
+  labs(x="Age (years)", y="CV Step Length")
+```
+
+# Use CV to calculate SD
+Since between study variability (I2) is lower for CV vs. SD, and SD seems to increase with the mean (not quite significant but under-powered).
+
+CV does not appear to be influenced by age or sex
+
+
+# Final formulas
+
+Neurotypical step length:
+  Women:   62.3704 - 0.1202*age
+  Men:     67.2514 - 0.0581*age
+
+CV in neurotypical step length = 6.62%
+SD in neurotypical step length = expected step length x 0.0662
+
+Low step length = 
+  lower than the 2.5th percentile of neurotypical step length = 
+  lower than mean neurotypical step length - 1.96 SDs 
+  
