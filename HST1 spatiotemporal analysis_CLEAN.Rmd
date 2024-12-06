@@ -5,6 +5,7 @@ output:
       toc: TRUE
       toc_depth: 2
       toc_float: true
+      code_download: true
 ---
 
 ```{r}
@@ -16,11 +17,15 @@ pacman::p_load(tidyverse, nlme, emmeans, patchwork, dplyr, ggplot2)
 ```{r}
 a=read.csv(file.path("../HIT-Stroke_Trial", "StudyData", "DASH export A.csv"))
 b=read.csv(file.path("../HIT-Stroke_Trial", "StudyData", "DASH export B.csv"))
-c=read.csv(file.path("../HIT-Stroke_Trial", "StudyData", "DASH export C.csv"))
-d=read.csv(file.path("../HIT-Stroke_Trial", "StudyData", "DASH export D.csv"))
-e=read.csv(file.path("../HIT-Stroke_Trial", "StudyData", "DASH export E.csv"))
+data=left_join(b, a, by="id")
+data$id=factor(data$id)
+data$test_session_num=data$test_session
+data$test_session=factor(data$test_session) %>% 
+   fct_recode(Baseline="1", "4-week"="2", "8-week"="3", "12-week"="4")
+data$study_site=factor(data$study_site)
+data$treatment=fct_recode(data$treatment, HIIT="HIT") %>% fct_relevel("MAT")
+data = mutate(data, test_phase = if_else(test_session=="Baseline", "Baseline", "Post 4, 8, and 12-week"))
 
-#names(b)
 outcomes=c("cadence", "StepLength_P", "StepLength_NP", "StepLength_sym", "StepTime_P", "StepTime_NP", "StepTime_sym",  "SingleSupport_P","SingleSupport_NP", "SingleSupport_sym", "StrideVelocityCV", "CycleTimeCV", "StrideLengthCV", "StrideVelocitySD", "CycleTimeSD", "StrideLengthSD")
 labels=c("Cadence (steps/min)", "Paretic step length (cm)", "Non-Paretic step length (cm)", "Step length symmetry", "Paretic step time (s)", "Non-Paretic step time (s)", "Step time symmetry", "Paretic single-support time (%)", "Non-Paretic single-support time (%)", "Single-support symmetry", "Stride velocity CV (%)", "Stride time CV (%)", "Stride length CV (%)", "Stride velocity SD (cm/s)", "Stride time SD (s)", "Stride length SD (cm)")
 digits=c(1,1,1,1,2,1,1,1,1,1,1,1,1,1,2,1)
@@ -31,59 +36,36 @@ labels.PNP=c("P step length (cm)", "P step time (s)", "P single-support time (%)
              "NP step length (cm)", "NP step time (s)", "NP single-support time (%)")
 outcomes.CV=c("StrideVelocityCV", "CycleTimeCV", "StrideLengthCV", "StrideVelocitySD", "CycleTimeSD", "StrideLengthSD")
 labels.CV=c("Stride velocity CV (%)", "Stride time CV (%)", "Stride length CV (%)", "Stride velocity SD (cm/s)", "Stride time SD (s)", "Stride length SD (cm)")
-#outcome="smwt_m"
-
-data$id=factor(data$id)
-data$test_session_num=data$test_session
-data$test_session=factor(data$test_session) %>% 
-   fct_recode(Baseline="1", "4-week"="2", "8-week"="3", "12-week"="4")
-data$study_site=factor(data$study_site)
-data$treatment=fct_recode(data$treatment, HIIT="HIT") %>% fct_relevel("MAT")
-data = mutate(data, test_phase = if_else(test_session=="Baseline", "Baseline", "Post 4, 8, and 12-week"))
-#data=left_join(data, newdata)
 ```
 
 
 # QC
-Setting extremely implausible values to missing, especially if we don't have the raw data file to validate
-No plausible CVs above 50
+Setting extremely implausible values to missing
 ```{r message=FALSE, warning=FALSE}
 summary(data$StrideVelocityCV) ; sd(data$StrideVelocityCV, na.rm=T)
 data %>% filter(StrideVelocityCV > 40) %>% select(id, test_session, all_of(outcomes.CV), all_of(outcomes))
-data[data$id=="33" & data$test_session=="Baseline", "right.file"] #TRUE but still too implausible for id and overall
 data[data$id=="33" & data$test_session=="Baseline", "StrideVelocityCV"]=NA
-data[data$id=="53" & data$test_session=="4-week", "right.file"] #TRUE still implausible overall
 data[data$id=="53" & data$test_session=="4-week", c("StrideVelocityCV")]=NA 
 data[data$id=="53" & data$test_session=="12-week", c("StrideVelocityCV")]=NA 
-data[data$id=="11" & data$test_session=="Baseline", "right.file"] #FALSE and only value for id
 data[data$id=="11" & data$test_session=="Baseline", c("StrideVelocityCV")]=NA
 ggplot(data, aes(x=test_session, y=StrideVelocityCV, group=id)) + geom_line() + geom_point() + facet_wrap(~id)
-#ggsave("Figures/QC.StrideVelocityCV.pdf", width=30, height=30)
 
 summary(data$CycleTimeCV) ; sd(data$CycleTimeCV, na.rm=T)
 data %>% filter(CycleTimeCV > 40) %>% select(id, test_session, all_of(outcomes.CV), all_of(outcomes))
-data[data$id=="11" & data$test_session=="Baseline", "right.file"] #FALSE and only value for id
 data[data$id=="11" & data$test_session=="Baseline", c("CycleTimeCV")]=NA
 ggplot(data, aes(x=test_session, y=CycleTimeCV, group=id)) + geom_line() + geom_point() + facet_wrap(~id)
-#ggsave("Figures/QC.CycleTimeCV.pdf", width=30, height=30)
 
 summary(data$StrideLengthCV) ; sd(data$StrideLengthCV, na.rm=T)
 data %>% filter(StrideLengthCV > 40) %>% select(id, test_session, all_of(outcomes.CV), all_of(outcomes))
-data[data$id=="42" & data$test_session=="12-week", "right.file"] #FALSE and very extreme
 data[data$id=="42" & data$test_session=="12-week", "StrideLengthCV"]=NA
-data[data$id=="22" & data$test_session=="12-week", "right.file"] #FALSE and very extreme
 data[data$id=="22" & data$test_session=="12-week", "StrideLengthCV"]=NA
-data[data$id=="53" & data$test_session=="Baseline", "right.file"] #TRUE - also plausible based on other values for id
 ggplot(data, aes(x=test_session, y=StrideLengthCV, group=id)) + 
    geom_line() + geom_point() + facet_wrap(~id)
-#ggsave("Figures/QC.StrideLengthCV.pdf", width=30, height=30)
 
 summary(data$StepTime_P) ; sd(data$StepTime_P, na.rm=T)
-data %>% filter(StepTime_P > 2) %>% select(id, test_session, right.file, StepTime_P, StepTime_NP, all_of(outcomes))
-data %>% filter(StepTime_P < 0.5) %>% select(id, test_session, right.file, StepTime_P, StepTime_NP, all_of(outcomes))
+data %>% filter(StepTime_P > 2) %>% select(id, test_session, StepTime_P, StepTime_NP, all_of(outcomes))
+data %>% filter(StepTime_P < 0.5) %>% select(id, test_session, StepTime_P, StepTime_NP, all_of(outcomes))
 ggplot(data, aes(x=test_session, y=StepTime_P, group=id)) + geom_line() + geom_point() + facet_wrap(~id)
-#ggsave("Figures/QC.StepTime_P.pdf", width=30, height=30)
-
 ```
 
 # QC for SD data
@@ -91,33 +73,23 @@ Making sure to drop same values for both CV and SD
 ```{r message=FALSE, warning=FALSE}
 summary(data$StrideVelocitySD) ; sd(data$StrideVelocitySD, na.rm=T)
 data %>% filter(StrideVelocitySD > 10) %>% select(id, test_session, StrideVelocitySD, all_of(outcomes))
-data[data$id=="33" & data$test_session=="Baseline", "right.file"] #TRUE but still too implausible for id and overall
 data[data$id=="33" & data$test_session=="Baseline", "StrideVelocitySD"]=NA
-data[data$id=="53" & data$test_session=="4-week", "right.file"] #TRUE still implausible overall
 data[data$id=="53" & data$test_session=="4-week", c("StrideVelocitySD")]=NA 
 data[data$id=="53" & data$test_session=="12-week", c("StrideVelocitySD")]=NA 
-data[data$id=="11" & data$test_session=="Baseline", "right.file"] #FALSE and only value for id
 data[data$id=="11" & data$test_session=="Baseline", c("StrideVelocitySD")]=NA
 ggplot(data, aes(x=test_session, y=StrideVelocitySD, group=id)) + geom_line() + geom_point() + facet_wrap(~id)
-#ggsave("Figures/QC.StrideVelocitySD.pdf", width=30, height=30)
 
 summary(data$CycleTimeSD) ; sd(data$CycleTimeSD, na.rm=T)
 data %>% filter(CycleTimeSD > 0.5) %>% select(id, test_session, CycleTimeSD, all_of(outcomes))
-data[data$id=="11" & data$test_session=="Baseline", "right.file"] #FALSE and only value for id
 data[data$id=="11" & data$test_session=="Baseline", c("CycleTimeSD")]=NA
 ggplot(data, aes(x=test_session, y=CycleTimeSD, group=id)) + geom_line() + geom_point() + facet_wrap(~id)
-#ggsave("Figures/QC.CycleTimeSD.pdf", width=30, height=30)
 
 summary(data$StrideLengthSD) ; sd(data$StrideLengthSD, na.rm=T)
 data %>% filter(StrideLengthSD > 10) %>% select(id, test_session, StrideLengthSD, all_of(outcomes))
-data[data$id=="42" & data$test_session=="12-week", "right.file"] #FALSE and very extreme
 data[data$id=="42" & data$test_session=="12-week", "StrideLengthSD"]=NA
-data[data$id=="22" & data$test_session=="12-week", "right.file"] #FALSE and very extreme
 data[data$id=="22" & data$test_session=="12-week", "StrideLengthSD"]=NA
-data[data$id=="53" & data$test_session=="Baseline", "right.file"] #TRUE - also plausible based on other values for id
 ggplot(data, aes(x=test_session, y=StrideLengthSD, group=id)) + 
    geom_line() + geom_point() + facet_wrap(~id)
-#ggsave("Figures/QC.StrideLengthSD.pdf", width=30, height=30)
 ```
 
 
@@ -127,14 +99,6 @@ Could be intermittent toe drag that was not appropriately cleaned, but raw files
 ```{r}
 filter(data, id=="53") %>% select(test_session, all_of(outcomes))
 ```
-
-##DATA EXPORT HERE
-```{r}
-data.selected <- data %>% select(id, test_session, cadence, StepLength_P, StepLength_NP, StepLength_sym, StepTime_P, StepTime_NP, StepTime_sym, SingleSupport_P, SingleSupport_NP, SingleSupport_sym, StrideVelocityCV, CycleTimeCV, StrideLengthCV, StrideVelocitySD, CycleTimeSD, StrideLengthSD)
-data.selected
-#write.csv(data.selected, "Data Selected.csv", row.names=F)
-```
-
 
 #Available Data
 ```{r}
@@ -223,7 +187,7 @@ main.table=means.wide.table %>%
    mutate(`HIIT.change.p`=sprintf("%.4f", `HIIT_p.value`)) %>%
    mutate(`MAT.change.p`=sprintf("%.4f", `MAT_p.value`)) %>%
    mutate(`HIIT-MAT: p.value`=sprintf("%.4f", `HIIT-MAT: p.value`)) %>%
-   select(outcome, test_session, N.obs.HIIT, N.obs.MAT, 
+   select(`outcome`, test_session, N.obs.HIIT, N.obs.MAT, 
           Mean.HIIT, HIIT.change.p, 
           Mean.MAT, MAT.change.p, 
           `Mean.HIIT-MAT`, `HIIT-MAT: p.value`) %>% # `HIIT-MAT: p.value`
@@ -444,7 +408,7 @@ main.table=means.wide.table %>%
    mutate(`HIIT.change.p`=sprintf("%.4f", `HIIT_p.value`)) %>%
    mutate(`MAT.change.p`=sprintf("%.4f", `MAT_p.value`)) %>%
    mutate(`HIIT-MAT: p.value`=sprintf("%.4f", `HIIT-MAT: p.value`)) %>%
-   select(outcome, test_session, N.obs.HIIT, N.obs.MAT, 
+   select(`outcome`, test_session, N.obs.HIIT, N.obs.MAT, 
           Mean.HIIT, HIIT.change.p, 
           Mean.MAT, MAT.change.p, 
           `Mean.HIIT-MAT`, `HIIT-MAT: p.value`) %>% # `HIIT-MAT: p.value`
@@ -595,7 +559,7 @@ StepLength_NPshort.table=means.wide.table %>%
    mutate(`HIIT.change.p`=sprintf("%.4f", `HIIT_p.value`)) %>%
    mutate(`MAT.change.p`=sprintf("%.4f", `MAT_p.value`)) %>%
    mutate(`HIIT-MAT: p.value`=sprintf("%.4f", `HIIT-MAT: p.value`)) %>%
-   select(outcome, test_session, N.obs.HIIT, N.obs.MAT, 
+   select(`outcome`, test_session, N.obs.HIIT, N.obs.MAT, 
           Mean.HIIT, HIIT.change.p, 
           Mean.MAT, MAT.change.p, 
           `Mean.HIIT-MAT`, `HIIT-MAT: p.value`) %>% # `HIIT-MAT: p.value`
@@ -617,10 +581,10 @@ StepLength_NPshort.table
 AbsSym_data = data %>% #with data from participant 53 for demographics table
   mutate(Sym_Category = ifelse(StepLength_sym <95.2, "Asymmetrical", "Symmetrical"))
 #filter out baseline to get separate dataset
-Sym_Category.pre = filter(AbSym_data, test_session == "Baseline") %>%
+Sym_Category.pre = filter(AbsSym_data, test_session == "Baseline") %>%
   select(id, Sym_Category)
 #join datasets together with neew column with baseline values in each column
-data_Absym=left_join(AbSym_data, Sym_Category.pre, by="id")
+data_Absym=left_join(AbsSym_data, Sym_Category.pre, by="id")
 #filter data so only have Asymmetrical participants 
 Absym_asymm = data_Absym %>%
   filter(Sym_Category.y == "Asymmetrical")
@@ -722,7 +686,7 @@ Absym_asymm.table=means.wide.table %>%
    mutate(`HIIT.change.p`=sprintf("%.4f", `HIIT_p.value`)) %>%
    mutate(`MAT.change.p`=sprintf("%.4f", `MAT_p.value`)) %>%
    mutate(`HIIT-MAT: p.value`=sprintf("%.4f", `HIIT-MAT: p.value`)) %>%
-   select(outcome, test_session, N.obs.HIIT, N.obs.MAT, 
+   select(`outcome`, test_session, N.obs.HIIT, N.obs.MAT, 
           Mean.HIIT, HIIT.change.p, 
           Mean.MAT, MAT.change.p, 
           `Mean.HIIT-MAT`, `HIIT-MAT: p.value`) %>% # `HIIT-MAT: p.value`
