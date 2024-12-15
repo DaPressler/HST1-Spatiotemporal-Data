@@ -325,8 +325,8 @@ plot.cadence = means.table %>% mutate(outcome=factor(outcome, levels=outcomes, l
       labs(x=element_blank(), y=element_blank()) +
       theme_bw() + theme(text=element_text(size=15), legend.position="none") 
 (plot.PNP + theme(legend.position='bottom')) / (plot.sym) / (plot.CV) / (plot.cadence) + plot_layout(heights=c(1.5,1,1.75,1))
-#ggsave("Figures/Fig 1.jpeg", width=7.5, height=10, device = "jpeg")
-#ggsave("Figures/Fig 1.pdf", width=7.5, height=10, device=cairo_pdf)
+#ggsave("Figures/Fig 1.jpeg", width=8.5, height=11, device = "jpeg")
+#ggsave("Figures/Fig 1.pdf", width=8.5, height=11, device=cairo_pdf)
 ```
 
 
